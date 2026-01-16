@@ -5,6 +5,7 @@
 
 import streamlit as st
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -56,7 +57,7 @@ st.markdown("""
 # ==================== 物理常量定义 ====================
 G = 10.0  # 重力加速度 (m/s²)
 AIR_DENSITY = 1.225  # 空气密度 (kg/m³)
-DRAG_COEFFICIENT = 0.47  # 球体空气阻力系数
+DRAG_COEFFICIENT = 0.42  # 球体空气阻力系数
 BALL_DENSITY = 1000  # 小球密度 (kg/m³)，假设为水的密度
 
 # ==================== 物理计算函数 ====================
@@ -194,9 +195,34 @@ def simulate_trajectory(params):
     trajectory = np.array(trajectory)
     time_points = np.array(time_points)
     
-    # 落地点和飞行时间
-    landing_point = trajectory[-1]
-    flight_time = time_points[-1]
+    # 修正落地点坐标
+    # 如果最后一个点的Z坐标小于0（穿过了地面），进行线性插值修正
+    if trajectory[-1, 2] < 0:
+        # 获取倒数第二个点（在地面以上）
+        prev_point = trajectory[-2]
+        last_point = trajectory[-1]
+        
+        # 计算穿过地面的比例
+        # prev_z > 0, last_z < 0
+        # 我们要找到z=0的点
+        z_prev = prev_point[2]
+        z_last = last_point[2]
+        
+        # 线性插值比例：从prev_point到last_point，z从正数变为负数
+        # 我们要找到z=0的位置的比例
+        ratio = z_prev / (z_prev - z_last)  # 0 < ratio < 1
+        
+        # 插值计算落地点
+        landing_point = prev_point + ratio * (last_point - prev_point)
+        landing_point[2] = 0.0  # 确保Z坐标为0
+        
+        # 插值计算飞行时间
+        flight_time = time_points[-2] + ratio * (time_points[-1] - time_points[-2])
+    else:
+        # 如果最后一个点的Z坐标刚好为0或大于0（理论上不应该发生）
+        landing_point = trajectory[-1]
+        landing_point[2] = max(0.0, landing_point[2])  # 确保Z坐标不为负
+        flight_time = time_points[-1]
     
     return trajectory, time_points, landing_point, flight_time, mass, volume
 
@@ -223,195 +249,328 @@ height_mode = st.sidebar.radio(
 )
 
 if height_mode == "无人机高度":
+    # 初始化 session_state
     if 'drone_height' not in st.session_state:
         st.session_state.drone_height = 5.0
     
+    # 回调函数：从滑动条更新输入框
+    def update_drone_height_from_slider():
+        st.session_state.drone_height_input = st.session_state.drone_height_slider
+        st.session_state.drone_height = st.session_state.drone_height_slider
+    
+    # 回调函数：从输入框更新滑动条
+    def update_drone_height_from_input():
+        st.session_state.drone_height_slider = st.session_state.drone_height_input
+        st.session_state.drone_height = st.session_state.drone_height_input
+    
     col_h1, col_h2 = st.sidebar.columns([3, 1])
     with col_h1:
-        st.session_state.drone_height = st.slider(
+        st.slider(
             "无人机高度 (m)",
             min_value=0.0,
             max_value=100.0,
             value=st.session_state.drone_height,
             step=0.1,
             key="drone_height_slider",
+            on_change=update_drone_height_from_slider,
             help="无人机距离地面的高度"
         )
     with col_h2:
-        st.session_state.drone_height = st.number_input(
-            "高度值",
+        st.number_input(
+            "无人机高度 (m)",
             min_value=0.0,
             max_value=100.0,
             value=st.session_state.drone_height,
             step=0.1,
             key="drone_height_input",
+            on_change=update_drone_height_from_input,
             label_visibility="collapsed"
         )
     drone_height = st.session_state.drone_height
     ball_height = drone_height - 0.1  # 小球在无人机下方10cm
 else:
+    # 初始化 session_state
     if 'ball_height' not in st.session_state:
         st.session_state.ball_height = 5.0
     
+    # 回调函数：从滑动条更新输入框
+    def update_ball_height_from_slider():
+        st.session_state.ball_height_input = st.session_state.ball_height_slider
+        st.session_state.ball_height = st.session_state.ball_height_slider
+    
+    # 回调函数：从输入框更新滑动条
+    def update_ball_height_from_input():
+        st.session_state.ball_height_slider = st.session_state.ball_height_input
+        st.session_state.ball_height = st.session_state.ball_height_input
+    
     col_h1, col_h2 = st.sidebar.columns([3, 1])
     with col_h1:
-        st.session_state.ball_height = st.slider(
+        st.slider(
             "小球高度 (m)",
             min_value=0.0,
             max_value=100.0,
             value=st.session_state.ball_height,
             step=0.1,
             key="ball_height_slider",
+            on_change=update_ball_height_from_slider,
             help="小球初始距离地面的高度"
         )
     with col_h2:
-        st.session_state.ball_height = st.number_input(
-            "高度值",
+        st.number_input(
+            "小球高度 (m)",
             min_value=0.0,
             max_value=100.0,
             value=st.session_state.ball_height,
             step=0.1,
             key="ball_height_input",
+            on_change=update_ball_height_from_input,
             label_visibility="collapsed"
         )
     ball_height = st.session_state.ball_height
     drone_height = ball_height + 0.1  # 无人机在小球上方10cm
 
 # 小球半径（cm转换为m）
+# 初始化 session_state
 if 'ball_radius_cm' not in st.session_state:
-    st.session_state.ball_radius_cm = 5
+    st.session_state.ball_radius_cm = 10.0  # 增大半径，让风力效果更明显
+
+# 回调函数：从滑动条更新输入框
+def update_ball_radius_from_slider():
+    st.session_state.ball_radius_input = st.session_state.ball_radius_slider
+    st.session_state.ball_radius_cm = st.session_state.ball_radius_slider
+
+# 回调函数：从输入框更新滑动条
+def update_ball_radius_from_input():
+    st.session_state.ball_radius_slider = st.session_state.ball_radius_input
+    st.session_state.ball_radius_cm = st.session_state.ball_radius_input
 
 col_r1, col_r2 = st.sidebar.columns([3, 1])
 with col_r1:
-    st.session_state.ball_radius_cm = st.slider(
+    st.slider(
         "小球半径 (cm)",
-        min_value=1,
-        max_value=1000,
+        min_value=1.0,
+        max_value=1000.0,
         value=st.session_state.ball_radius_cm,
-        step=1,
+        step=1.0,
         key="ball_radius_slider",
+        on_change=update_ball_radius_from_slider,
         help="小球的半径，用于计算体积和质量"
     )
 with col_r2:
-    st.session_state.ball_radius_cm = st.number_input(
-        "半径值",
-        min_value=1,
-        max_value=1000,
+    st.number_input(
+        "小球半径 (cm)",
+        min_value=1.0,
+        max_value=1000.0,
         value=st.session_state.ball_radius_cm,
-        step=1,
+        step=1.0,
         key="ball_radius_input",
+        on_change=update_ball_radius_from_input,
         label_visibility="collapsed"
     )
 ball_radius = st.session_state.ball_radius_cm / 100  # 转换为米
 
 # 小球密度
 if 'ball_density' not in st.session_state:
-    st.session_state.ball_density = 10
+    st.session_state.ball_density = 100.0  # 改为较小的密度，让风力效果更明显
+if 'ball_density_input' not in st.session_state:
+    st.session_state.ball_density_input = st.session_state.ball_density
 
-col_d1, col_d2 = st.sidebar.columns([3, 1])
-with col_d1:
-    st.session_state.ball_density = st.slider(
-        "小球密度 (kg/m³)",
-        min_value=1,
-        max_value=5000,
-        value=st.session_state.ball_density,
-        step=1,
-        key="ball_density_slider",
-        help="小球的密度，用于计算质量（水=1000, 钢=7850, 铝=2700）"
-    )
-with col_d2:
-    st.session_state.ball_density = st.number_input(
-        "密度值",
-        min_value=1,
-        max_value=5000,
-        value=st.session_state.ball_density,
-        step=1,
-        key="ball_density_input",
-        label_visibility="collapsed"
-    )
+# 回调函数：同步输入值到主值
+def update_ball_density():
+    st.session_state.ball_density = st.session_state.ball_density_input
+
+st.sidebar.number_input(
+    "小球密度 (kg/m³)",
+    min_value=1.0,
+    max_value=20000.0,
+    value=st.session_state.ball_density_input,
+    step=1.0,
+    key="ball_density_input",
+    on_change=update_ball_density
+)
 ball_density = st.session_state.ball_density
+
+# 常见物体密度参考
+with st.sidebar.expander("📚 常见物体密度参考"):
+    # 密度数据
+    density_data = [
+        # 金属
+        ["金", 19320, "金属"],
+        ["银", 10500, "金属"],
+        ["铜", 8930, "金属"],
+        ["铁/钢", 7860, "金属"],
+        ["铝", 2700, "金属"],
+        # 液体
+        ["汞(水银)", 13550, "液体"],
+        ["海水", 1025, "液体"],
+        ["水(纯水)", 1000, "液体"],
+        ["酒精", 789, "液体"],
+        ["汽油", 730, "液体"],
+        # 建筑材料
+        ["花岗岩", 2700, "建筑材料"],
+        ["混凝土", 2400, "建筑材料"],
+        ["玻璃", 2600, "建筑材料"],
+        ["砖", 1800, "建筑材料"],
+        # 气体
+        ["二氧化碳", 1.98, "气体"],
+        ["空气", 1.29, "气体"],
+        ["氦气", 0.178, "气体"],
+        # 其他
+        ["冰", 917, "其他"],
+        ["干松木", 500, "其他"],
+        ["塑料", 935, "其他"],
+        ["人体平均", 1002, "其他"],
+    ]
+    
+    # 创建DataFrame
+    import pandas as pd
+    density_df = pd.DataFrame(density_data, columns=["物体", "密度 (kg/m³)", "类别"])
+    
+    # 按类别分组显示
+    categories = density_df["类别"].unique()
+    
+    for category in categories:
+        st.write(f"**{category}**")
+        category_data = density_df[density_df["类别"] == category]
+        
+        # 创建列来显示物体名称和按钮
+        for idx, row in category_data.iterrows():
+            col_name, col_btn = st.columns([2, 1])
+            with col_name:
+                st.write(f"{row['物体']}: {row['密度 (kg/m³)']}")
+            with col_btn:
+                if st.button("使用", key=f"density_btn_{idx}"):
+                    density_value = float(row['密度 (kg/m³)'])
+                    st.session_state.ball_density = density_value
+                    st.session_state.ball_density_input = density_value
+                    st.rerun()
+        st.divider()
+    
+    # 显示完整表格
+    st.write("**完整密度表格**")
+    st.dataframe(density_df, width='stretch', hide_index=True)
+    
+    # 显示单位换算说明
+    st.info("💡 **单位换算**: 1 g/cm³ = 1000 kg/m³")
 
 # 初速度设置
 st.sidebar.subheader("🚀 初速度设置")
 
 if mode == "平抛运动":
     if 'v0_x' not in st.session_state:
-        st.session_state.v0_x = 20
-    st.session_state.v0_x = st.sidebar.slider("水平初速度 v₀x (m/s)", 0, 50, st.session_state.v0_x, 1, key="v0_x_slider")
+        st.session_state.v0_x = 20.0
+    
+    # 回调函数：更新初速度
+    def update_v0_x():
+        st.session_state.v0_x = st.session_state.v0_x_slider
+    
+    st.sidebar.slider("水平初速度 v₀x (m/s)", 0.0, 50.0, st.session_state.v0_x, 1.0, key="v0_x_slider", on_change=update_v0_x)
     v0_x = st.session_state.v0_x
-    v0_y = 0
-    v0_z = 0
+    v0_y = 0.0
+    v0_z = 0.0
 elif mode == "斜抛运动":
     if 'v0_x' not in st.session_state:
-        st.session_state.v0_x = 20
+        st.session_state.v0_x = 20.0
     if 'v0_y' not in st.session_state:
-        st.session_state.v0_y = 0
+        st.session_state.v0_y = 0.0
     if 'v0_z' not in st.session_state:
-        st.session_state.v0_z = 10
-    st.session_state.v0_x = st.sidebar.slider("水平初速度 v₀x (m/s)", 0, 50, st.session_state.v0_x, 1, key="v0_x_slider")
-    st.session_state.v0_y = st.sidebar.slider("侧向初速度 v₀y (m/s)", 0, 50, st.session_state.v0_y, 1, key="v0_y_slider")
-    st.session_state.v0_z = st.sidebar.slider("垂直初速度 v₀z (m/s)", 0, 50, st.session_state.v0_z, 1, key="v0_z_slider")
+        st.session_state.v0_z = 10.0
+    
+    # 回调函数：更新初速度
+    def update_v0_x():
+        st.session_state.v0_x = st.session_state.v0_x_slider
+    
+    def update_v0_y():
+        st.session_state.v0_y = st.session_state.v0_y_slider
+    
+    def update_v0_z():
+        st.session_state.v0_z = st.session_state.v0_z_slider
+    
+    st.sidebar.slider("水平初速度 v₀x (m/s)", 0.0, 50.0, st.session_state.v0_x, 1.0, key="v0_x_slider", on_change=update_v0_x)
+    st.sidebar.slider("侧向初速度 v₀y (m/s)", 0.0, 50.0, st.session_state.v0_y, 1.0, key="v0_y_slider", on_change=update_v0_y)
+    st.sidebar.slider("垂直初速度 v₀z (m/s)", 0.0, 50.0, st.session_state.v0_z, 1.0, key="v0_z_slider", on_change=update_v0_z)
     v0_x = st.session_state.v0_x
     v0_y = st.session_state.v0_y
     v0_z = st.session_state.v0_z
 else:  # 自由落体
-    v0_x = 0
-    v0_y = 0
-    v0_z = 0
+    v0_x = 0.0
+    v0_y = 0.0
+    v0_z = 0.0
 
 # 风力设置
 st.sidebar.subheader("💨 风力设置")
 if 'wind_speed_x' not in st.session_state:
-    st.session_state.wind_speed_x = 0
+    st.session_state.wind_speed_x = 0.0
 if 'wind_speed_y' not in st.session_state:
-    st.session_state.wind_speed_y = 0
+    st.session_state.wind_speed_y = 0.0
 if 'wind_speed_z' not in st.session_state:
-    st.session_state.wind_speed_z = 0
+    st.session_state.wind_speed_z = 0.0
 
-st.session_state.wind_speed_x = st.sidebar.slider(
+# 回调函数：更新风速
+def update_wind_speed_x():
+    st.session_state.wind_speed_x = st.session_state.wind_speed_x_slider
+
+def update_wind_speed_y():
+    st.session_state.wind_speed_y = st.session_state.wind_speed_y_slider
+
+def update_wind_speed_z():
+    st.session_state.wind_speed_z = st.session_state.wind_speed_z_slider
+
+st.sidebar.slider(
     "X方向风速 (m/s)",
-    min_value=-20,
-    max_value=20,
+    min_value=-20.0,
+    max_value=20.0,
     value=st.session_state.wind_speed_x,
-    step=1,
+    step=1.0,
     key="wind_speed_x_slider",
+    on_change=update_wind_speed_x,
     help="正值向右，负值向左"
 )
-st.session_state.wind_speed_y = st.sidebar.slider(
+st.sidebar.slider(
     "Y方向风速 (m/s)",
-    min_value=-20,
-    max_value=20,
+    min_value=-20.0,
+    max_value=20.0,
     value=st.session_state.wind_speed_y,
-    step=1,
+    step=1.0,
     key="wind_speed_y_slider",
+    on_change=update_wind_speed_y,
     help="正值向前，负值向后"
 )
-st.session_state.wind_speed_z = st.sidebar.slider(
+st.sidebar.slider(
     "Z方向风速 (m/s)",
-    min_value=-10,
-    max_value=10,
+    min_value=-10.0,
+    max_value=10.0,
     value=st.session_state.wind_speed_z,
-    step=1,
+    step=1.0,
     key="wind_speed_z_slider",
+    on_change=update_wind_speed_z,
     help="正值向上，负值向下"
 )
 wind_speed_x = st.session_state.wind_speed_x
 wind_speed_y = st.session_state.wind_speed_y
 wind_speed_z = st.session_state.wind_speed_z
 
+# 风力效果提示
+st.sidebar.info("💡 **增强风力效果的方法**：\n- 增加风速（最大20m/s）\n- 增大小球半径\n- 减小球球密度\n- 增加初始高度")
+
 # 仿真参数
 st.sidebar.subheader("🔬 仿真参数")
 if 'dt' not in st.session_state:
     st.session_state.dt = 0.01
 
-st.session_state.dt = st.sidebar.slider(
+# 回调函数：更新时间步长
+def update_dt():
+    st.session_state.dt = st.session_state.dt_slider
+
+st.sidebar.slider(
     "时间步长 (s)",
     min_value=0.001,
     max_value=0.1,
     value=st.session_state.dt,
     step=0.001,
     key="dt_slider",
-    help="数值积分的时间步长，越小越精确但计算越慢"
+    on_change=update_dt,
+    help="数值积分的时间步长"
 )
 dt = st.session_state.dt
 
@@ -439,21 +598,59 @@ if st.sidebar.button("🚀 开始仿真", type="primary"):
     # 显示结果
     st.success("✅ 仿真完成！")
     
+    # 根据精确度格式化数据
+    format_str = ".4f"
+    
     # 分栏显示结果
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("初始高度", f"{ball_height:.2f} m")
-    col2.metric("飞行时间", f"{flight_time:.2f} s")
-    col3.metric("落地点 X", f"{landing_point[0]:.2f} m")
-    col4.metric("落地点 Y", f"{landing_point[1]:.2f} m")
-    col5.metric("落地点 Z", f"{landing_point[2]:.2f} m")
+    col1.metric("初始高度", f"{ball_height:{format_str}} m")
+    col2.metric("飞行时间", f"{flight_time:{format_str}} s")
+    col3.metric("落地点 X", f"{landing_point[0]:{format_str}} m")
+    col4.metric("落地点 Y", f"{landing_point[1]:{format_str}} m")
+    col5.metric("落地点 Z", f"{landing_point[2]:{format_str}} m")
     
     # 显示小球属性
     st.subheader("📊 小球物理属性")
     col5, col6, col7, col8 = st.columns(4)
-    col5.metric("小球质量", f"{mass:.4f} kg")
-    col6.metric("小球体积", f"{volume:.4f} m³")
-    col7.metric("小球密度", f"{ball_density:.0f} kg/m³")
-    col8.metric("迎风面积", f"{np.pi * ball_radius**2:.4f} m²")
+    col5.metric("小球质量", f"{mass:{format_str}} kg")
+    col6.metric("小球体积", f"{volume:{format_str}} m³")
+    col7.metric("小球密度", f"{ball_density:{format_str}} kg/m³")
+    col8.metric("迎风面积", f"{np.pi * ball_radius**2:{format_str}} m²")
+    
+    # 显示风力信息
+    st.subheader("💨 风力影响")
+    wind_speed = np.sqrt(wind_speed_x**2 + wind_speed_y**2 + wind_speed_z**2)
+    col_wind1, col_wind2, col_wind3, col_wind4 = st.columns(4)
+    col_wind1.metric("风速大小", f"{wind_speed:{format_str}} m/s")
+    col_wind2.metric("X方向风速", f"{wind_speed_x:{format_str}} m/s")
+    col_wind3.metric("Y方向风速", f"{wind_speed_y:{format_str}} m/s")
+    col_wind4.metric("Z方向风速", f"{wind_speed_z:{format_str}} m/s")
+    
+    # 计算最大风力产生的加速度（假设小球静止）
+    max_drag_force = 0.5 * AIR_DENSITY * DRAG_COEFFICIENT * (np.pi * ball_radius**2) * wind_speed**2
+    max_acceleration = max_drag_force / mass if mass > 0 else 0
+    col_wind5, col_wind6 = st.columns(2)
+    col_wind5.metric("最大空气阻力", f"{max_drag_force:{format_str}} N")
+    col_wind6.metric("风力加速度", f"{max_acceleration:{format_str}} m/s²")
+    
+    # 风力影响说明
+    wind_info = f"""
+    **风力影响分析：**
+    - 当前风速：{wind_speed:{format_str}} m/s
+    - 风力加速度：{max_acceleration:{format_str}} m/s²
+    - 相对重力加速度：{max_acceleration/G:.2%}
+    """
+    if wind_speed > 0:
+        if max_acceleration < 0.1:
+            wind_info += "\n⚠️ **风力影响较小**：建议增加风速、增大小球半径或减小小球密度以增强风力效果。"
+        elif max_acceleration < 0.5:
+            wind_info += "\n✅ **风力影响适中**：风力会对落地点产生明显影响。"
+        else:
+            wind_info += "\n🌪️ **风力影响显著**：风力将大幅改变落地点位置。"
+    else:
+        wind_info += "\nℹ️ **无风**：小球将按自由落体或抛物线运动。"
+    
+    st.info(wind_info)
     
     # 3D轨迹可视化
     st.subheader("🎯 3D轨迹可视化")
@@ -472,15 +669,16 @@ if st.sidebar.button("🚀 开始仿真", type="primary"):
     # 动画控制面板
     col_anim1, col_anim2, col_anim3 = st.columns([2, 2, 2])
     with col_anim1:
-        st.session_state.show_animation = st.checkbox("🎬 显示动画", value=st.session_state.show_animation, key="show_anim_checkbox", help="勾选后显示小球运动动画")
+        st.checkbox("🎬 显示动画", value=st.session_state.show_animation, key="show_anim_checkbox", help="勾选后显示小球运动动画")
     with col_anim2:
         if st.session_state.show_animation:
-            st.session_state.animation_speed = st.slider(
+            st.slider(
                 "播放速度倍率", 
                 0.1, 10.0, 
                 st.session_state.animation_speed, 0.1, 
-                help=f"1.0x = 真实时间（每帧{dt*1000:.1f}ms），当前每帧{frame_duration:.1f}ms",
-                key="anim_speed_slider"
+                help=f"1.0x = 真实时间（每帧{dt*1000:{format_str}}ms），当前每帧{frame_duration:{format_str}}ms",
+                key="anim_speed_slider",
+                disabled=True
             )
     with col_anim3:
         if st.session_state.show_animation:
@@ -490,9 +688,9 @@ if st.sidebar.button("🚀 开始仿真", type="primary"):
     if st.session_state.show_animation:
         col_time1, col_time2 = st.columns(2)
         with col_time1:
-            st.info(f"📊 真实飞行时间: {flight_time:.2f} 秒")
+            st.info(f"📊 真实飞行时间: {flight_time:{format_str}} 秒")
         with col_time2:
-            st.info(f"🎬 动画播放时间: {flight_time / st.session_state.animation_speed:.2f} 秒")
+            st.info(f"🎬 动画播放时间: {flight_time / st.session_state.animation_speed:{format_str}} 秒")
     
     fig = make_subplots(
         rows=1, cols=1,
