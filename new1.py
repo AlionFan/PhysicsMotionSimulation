@@ -1,516 +1,431 @@
-"""
-基于 Python + Streamlit 的 3D 物理仿真程序
-模拟无人机投放小球的运动轨迹，考虑重力和风力作用。
-
-优化版特性：
-1. 模块化结构 (Config, Physics, UI, Plotting)
-2. 类型安全 (Type Hinting)
-3. 代码复用 (通用组件封装)
-"""
-
 import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dataclasses import dataclass
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, Dict, Any
+import io
 
-# ==================== 1. 常量定义 (Constants) ====================
+# ==================== 1. 配置与样式 (已适配暗色模式) ====================
 
-# 物理常量
-CONST_G: float = 10.0                # 重力加速度 (m/s²)
-CONST_AIR_DENSITY: float = 1.225     # 空气密度 (kg/m³)
-CONST_DRAG_COEFF: float = 0.42       # 球体空气阻力系数
-CONST_DEFAULT_RADIUS_CM: float = 10.0
-CONST_DEFAULT_DENSITY: float = 100.0
-
-# 样式常量
-STYLE_PRIMARY_GRADIENT = "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-STYLE_GLASS_BG = "rgba(255, 255, 255, 0.85)"
-
-# ==================== 2. 数据结构 (Data Structures) ====================
-
-@dataclass
-class SimulationParams:
-    """仿真参数容器"""
-    ball_height: float
-    ball_radius: float
-    ball_density: float
-    mode: str
-    v0: np.ndarray          # [vx, vy, vz]
-    wind_velocity: np.ndarray # [wx, wy, wz]
-    dt: float
-    max_time: float = 100.0
-
-@dataclass
-class SimulationResult:
-    """仿真结果容器"""
-    trajectory: np.ndarray
-    time_points: np.ndarray
-    landing_point: np.ndarray
-    flight_time: float
-    mass: float
-    volume: float
-    gravity_work: float
-    wind_work: float
-    max_drag_force: float = 0.0 # 补充计算字段
-
-# ==================== 3. 核心逻辑 (Core Logic) ====================
-
-class PhysicsEngine:
-    """物理计算引擎"""
-
-    @staticmethod
-    def calculate_properties(radius: float, density: float) -> Tuple[float, float, float]:
-        """计算物理属性: 体积, 质量, 迎风面积"""
-        volume = (4/3) * np.pi * radius**3
-        mass = density * volume
-        area = np.pi * radius**2
-        return volume, mass, area
-
-    @staticmethod
-    def calculate_forces(velocity: np.ndarray, wind_velocity: np.ndarray, 
-                         mass: float, area: float) -> Tuple[np.ndarray, np.ndarray]:
-        """计算合力和风力"""
-        # 1. 重力
-        gravity_force = np.array([0.0, 0.0, -mass * CONST_G])
-        
-        # 2. 空气阻力 (相对速度)
-        relative_velocity = wind_velocity - velocity
-        relative_speed = np.linalg.norm(relative_velocity)
-        
-        drag_force = np.zeros(3)
-        if relative_speed > 0:
-            coeff = 0.5 * CONST_AIR_DENSITY * CONST_DRAG_COEFF * area
-            drag_force = coeff * relative_speed * relative_velocity
-            
-        return gravity_force + drag_force, drag_force
-
-    @staticmethod
-    def run_simulation(params: SimulationParams) -> SimulationResult:
-        """执行物理仿真"""
-        # 准备初始条件
-        volume, mass, area = PhysicsEngine.calculate_properties(params.ball_radius, params.ball_density)
-        
-        position = np.array([0.0, 0.0, params.ball_height], dtype=float)
-        velocity = params.v0.astype(float).copy()
-        
-        # 轨迹记录
-        trajectory: List[np.ndarray] = [position.copy()]
-        time_points: List[float] = [0.0]
-        
-        # 状态累加器
-        t = 0.0
-        gravity_work = 0.0
-        wind_work = 0.0
-
-        # 主循环
-        while position[2] > 0 and t < params.max_time:
-            #受力分析
-            total_force, drag_force_vec = PhysicsEngine.calculate_forces(
-                velocity, params.wind_velocity, mass, area
-            )
-            gravity_force_vec = np.array([0, 0, -mass * CONST_G])
-
-            # 欧拉积分
-            acceleration = total_force / mass
-            displacement = velocity * params.dt
-            
-            # 做功计算 (W = F · d)
-            gravity_work += np.dot(gravity_force_vec, displacement)
-            wind_work += np.dot(drag_force_vec, displacement)
-
-            # 状态更新
-            velocity += acceleration * params.dt
-            position += velocity * params.dt
-            t += params.dt
-
-            trajectory.append(position.copy())
-            time_points.append(t)
-
-        # 结果转换
-        traj_np = np.array(trajectory)
-        times_np = np.array(time_points)
-        
-        # 落地点修正 (线性插值)
-        landing_point = traj_np[-1]
-        flight_time = times_np[-1]
-
-        if traj_np[-1, 2] < 0 and len(traj_np) > 1:
-            prev_p = traj_np[-2]
-            last_p = traj_np[-1]
-            prev_t = times_np[-2]
-            last_t = times_np[-1]
-            
-            # 计算Z轴穿过0点的比例 ratio = z_prev / (z_prev - z_last)
-            ratio = prev_p[2] / (prev_p[2] - last_p[2])
-            
-            landing_point = prev_p + ratio * (last_p - prev_p)
-            landing_point[2] = 0.0 # 强制修正为地面
-            flight_time = prev_t + ratio * (last_t - prev_t)
-        else:
-            landing_point[2] = max(0.0, landing_point[2])
-
-        return SimulationResult(
-            trajectory=traj_np,
-            time_points=times_np,
-            landing_point=landing_point,
-            flight_time=flight_time,
-            mass=mass,
-            volume=volume,
-            gravity_work=gravity_work,
-            wind_work=wind_work
-        )
-
-# ==================== 4. UI 组件 (UI Components) ====================
+def setup_page():
+    st.set_page_config(
+        page_title="3D物理仿真 Pro - 无人机投掷",
+        page_icon="🚁",
+        layout="wide"
+    )
 
 def load_css():
-    """加载自定义CSS样式"""
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
     :root {
         --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        --glass-bg: rgba(255, 255, 255, 0.85);
-        --glass-border: rgba(255, 255, 255, 0.3);
-        --text-primary: #1a1a2e;
-        --text-secondary: #4a4a6a;
+        --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
+        --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
     }
+
     body { font-family: 'Inter', sans-serif; }
     .stTitle { display: none !important; }
-    
-    /* 紧凑标题 */
+
+    /* 顶部导航 */
     .compact-header {
-        position: sticky; top: 0; background: var(--glass-bg); z-index: 999;
-        padding: 0.8rem 1.5rem; border-bottom: 1px solid var(--glass-border);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08); backdrop-filter: blur(20px);
+        position: sticky; top: 0;
+        background: var(--background-color);
+        backdrop-filter: blur(20px);
+        z-index: 999;
+        padding: 0.8rem 1.5rem;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+        box-shadow: var(--shadow-sm);
+        display: flex; align-items: center; justify-content: space-between;
     }
     .compact-header h1 {
-        font-size: 1.5rem; margin: 0; background: var(--primary-gradient);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        font-size: 1.5rem; margin: 0; font-weight: 700;
+        background: var(--primary-gradient);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
     }
-    
-    /* 通用卡片样式 */
+
+    /* 卡片样式 */
     .feature-card {
-        background: var(--glass-bg); border: 1px solid var(--glass-border);
-        border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.08); transition: transform 0.3s;
+        background: var(--secondary-background-color);
+        border: 1px solid rgba(128, 128, 128, 0.1);
+        padding: 1.5rem; border-radius: 12px;
+        box-shadow: var(--shadow-sm);
+        transition: transform 0.3s ease;
     }
-    .feature-card:hover { transform: translateY(-4px); }
-    .welcome-banner {
-        background: var(--primary-gradient); color: white; padding: 2rem;
-        border-radius: 16px; margin-bottom: 2rem;
-    }
-    
-    /* Streamlit组件覆写 */
-    [data-testid="stMetricValue"] { font-size: 1.8rem !important; font-weight: 700; }
-    [data-testid="stMetricLabel"] { font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase; }
-    .stButton > button { border-radius: 12px; font-weight: 600; }
-    [data-testid="stSidebar"] { background: linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%); }
+    .feature-card h3 { color: var(--text-color) !important; font-size: 1.1rem; font-weight: 600; }
+    .feature-card p { color: var(--text-color); opacity: 0.8; font-size: 0.9rem; }
+
+    /* 指标与图表 */
+    [data-testid="stMetricValue"] { color: var(--text-color) !important; font-size: 1.6rem !important; }
+    [data-testid="stMetricLabel"] { color: var(--text-color) !important; opacity: 0.7; }
+    .plotly-graph-div { border-radius: 12px; box-shadow: var(--shadow-sm); border: 1px solid rgba(128, 128, 128, 0.1); }
+
+    /* 按钮 */
+    .stButton > button[kind="primary"] { background: var(--primary-gradient) !important; border: none; color: white !important; }
     </style>
     """, unsafe_allow_html=True)
 
-def render_header():
-    """渲染顶部标题和横幅"""
-    st.markdown("""
-    <div class="compact-header"><h1>🚁 3D物理仿真 - 无人机投掷小球</h1></div>
-    <div class="welcome-banner">
-        <h2 style="margin:0">🎯 探索物理世界的奥秘</h2>
-        <p style="opacity:0.9; margin-top:0.5rem">通过交互式3D仿真，深入理解重力、空气阻力和风力对物体运动的影响</p>
-    </div>
-    """, unsafe_allow_html=True)
+# ==================== 2. 物理引擎 (升级版) ====================
 
-    cols = st.columns(3)
-    features = [
-        ("🌬️ 真实风力模拟", "精确计算三维风力对小球轨迹的影响"),
-        ("📐 3D可视化", "实时3D轨迹动画，支持多视角2D投影"),
-        ("🔬 精确物理计算", "基于牛顿运动定律和空气阻力方程")
-    ]
-    for col, (title, desc) in zip(cols, features):
-        col.markdown(f"""
-        <div class="feature-card">
-            <h3 style="font-size:1.1rem; margin-bottom:0.5rem">{title}</h3>
-            <p style="font-size:0.9rem; color:#4a4a6a; margin:0">{desc}</p>
-        </div>
-        """, unsafe_allow_html=True)
-    st.divider()
+CONSTANTS = {'G': 9.81, 'AIR_DENSITY': 1.225, 'DRAG_COEFFICIENT': 0.47}
 
-def render_synced_input(label: str, session_key: str, min_v: float, max_v: float, 
-                        step: float, default: float, help_text: str = "") -> float:
-    """
-    渲染同步的滑块和数字输入框
-    """
-    if session_key not in st.session_state:
-        st.session_state[session_key] = default
+def calculate_ball_properties(radius_m: float, density: float) -> Tuple[float, float, float]:
+    volume = (4/3) * np.pi * radius_m**3
+    mass = density * volume
+    area = np.pi * radius_m**2
+    return volume, mass, area
 
-    col1, col2 = st.sidebar.columns([3, 1])
-    
-    # 回调函数
-    def _sync_slider():
-        st.session_state[session_key] = st.session_state[f"{session_key}_slider"]
-        
-    def _sync_input():
-        st.session_state[session_key] = st.session_state[f"{session_key}_input"]
+def run_simulation(params: Dict[str, Any]):
+    """核心仿真循环"""
+    dt = params['dt']
+    wind_vel = np.array([params['wind_x'], params['wind_y'], params['wind_z']])
 
-    with col1:
-        st.slider(
-            f"{label}", min_v, max_v, st.session_state[session_key], step,
-            key=f"{session_key}_slider", help=help_text, on_change=_sync_slider
-        )
-    with col2:
-        st.number_input(
-            "Value", min_v, max_v, st.session_state[session_key], step,
-            key=f"{session_key}_input", label_visibility="collapsed", on_change=_sync_input
-        )
-        
-    return st.session_state[session_key]
+    vol, mass, area = calculate_ball_properties(params['radius'], params['density'])
+    pos = np.array([0.0, 0.0, params['height']])
+    vel = np.array([params['v0_x'], params['v0_y'], params['v0_z']])
 
-# ==================== 5. 绘图逻辑 (Plotting) ====================
+    # 历史记录
+    trajectory = [pos.copy()]
+    velocities = [vel.copy()]
+    time_points = [0.0]
+    energies = []
 
-def create_3d_figure(res: SimulationResult, dt: float, speed: float) -> go.Figure:
-    """创建3D轨迹和动画"""
+    t = 0.0
+    gravity_vec = np.array([0.0, 0.0, -mass * CONSTANTS['G']])
+
+    def get_energy(m, v, h):
+        ke = 0.5 * m * np.linalg.norm(v)**2
+        pe = m * CONSTANTS['G'] * h
+        return ke, pe, ke + pe
+
+    energies.append(get_energy(mass, vel, pos[2]))
+
+    while pos[2] > 0 and t < 60:
+        # 力学计算
+        rel_vel = wind_vel - vel
+        rel_speed = np.linalg.norm(rel_vel)
+        drag_force = 0.5 * CONSTANTS['AIR_DENSITY'] * CONSTANTS['DRAG_COEFFICIENT'] * area * rel_speed * rel_vel if rel_speed > 0 else np.zeros(3)
+        total_force = gravity_vec + drag_force
+
+        # 欧拉积分
+        acc = total_force / mass
+        vel += acc * dt
+        pos += vel * dt
+        t += dt
+
+        trajectory.append(pos.copy())
+        velocities.append(vel.copy())
+        time_points.append(t)
+        energies.append(get_energy(mass, vel, pos[2]))
+
+    # 数据转换
+    traj_arr = np.array(trajectory)
+    vel_arr = np.array(velocities)
+    energy_arr = np.array(energies)
+    time_arr = np.array(time_points)
+
+    # 落地修正
+    landing_point = traj_arr[-1]
+    if traj_arr[-1, 2] < 0 and len(traj_arr) > 1:
+        prev_z = traj_arr[-2, 2]
+        curr_z = traj_arr[-1, 2]
+        ratio = prev_z / (prev_z - curr_z)
+        landing_point = traj_arr[-2] + ratio * (traj_arr[-1] - traj_arr[-2])
+        landing_point[2] = 0.0
+        flight_time = time_arr[-2] + ratio * dt
+    else:
+        landing_point[2] = max(0, landing_point[2])
+        flight_time = time_arr[-1]
+
+    return {
+        'traj': traj_arr,
+        'vel': vel_arr,
+        'energy': energy_arr,
+        'time': time_arr,
+        'landing': landing_point,
+        'flight_time': flight_time,
+        'mass': mass,
+        'area': area,
+        'params': params # 保存参数以便对比
+    }
+
+# ==================== 3. 可视化组件 (含修复) ====================
+
+def create_3d_plot(current_res: Dict, prev_res: Dict, anim_speed: float, show_anim: bool):
+    """3D 绘图，支持双轨迹对比"""
+    traj = current_res['traj']
+    landing = current_res['landing']
+
+    # 修复：从 current_res 中获取 dt，而不是直接使用未定义的 params
+    dt = current_res['params']['dt']
+
     fig = make_subplots(specs=[[{'type': 'scatter3d'}]])
-    
-    # 1. 地面网格
-    grid_range = max(abs(res.landing_point[0]), abs(res.landing_point[1]), 50)
-    grid = np.linspace(-grid_range, grid_range, 20)
-    X, Y = np.meshgrid(grid, grid)
-    fig.add_trace(go.Surface(x=X, y=Y, z=np.zeros_like(X), colorscale='Greys', showscale=False, opacity=0.3))
-    
-    # 2. 静态元素 (轨迹线、起点、终点)
-    fig.add_trace(go.Scatter3d(
-        x=res.trajectory[:, 0], y=res.trajectory[:, 1], z=res.trajectory[:, 2],
-        mode='lines', name='运动轨迹', line=dict(color='blue', width=4)
-    ))
-    fig.add_trace(go.Scatter3d(
-        x=[res.trajectory[0, 0]], y=[res.trajectory[0, 1]], z=[res.trajectory[0, 2]],
-        mode='markers', name='起点', marker=dict(color='green', size=10)
-    ))
-    fig.add_trace(go.Scatter3d(
-        x=[res.landing_point[0]], y=[res.landing_point[1]], z=[res.landing_point[2]],
-        mode='markers', name='落地点', marker=dict(color='red', size=10)
-    ))
 
-    # 3. 动画帧生成
-    frames = []
-    # 智能采样：根据点数动态调整，保证动画流畅且不过大
-    num_points = len(res.trajectory)
-    step_size = max(1, int(num_points / (100 if speed > 2.0 else 200))) 
-    
-    for i in range(0, num_points, step_size):
-        frames.append(go.Frame(
-            data=[go.Scatter3d(
-                x=[res.trajectory[i, 0]], y=[res.trajectory[i, 1]], z=[res.trajectory[i, 2]],
-                mode='markers', marker=dict(color='orange', size=15)
-            )],
-            name=f'f{i}'
+    # 1. 绘制上一条轨迹 (如果有)
+    if prev_res:
+        p_traj = prev_res['traj']
+        fig.add_trace(go.Scatter3d(
+            x=p_traj[:, 0], y=p_traj[:, 1], z=p_traj[:, 2],
+            mode='lines', name='上次轨迹',
+            line=dict(color='rgba(150, 150, 150, 0.5)', width=3, dash='dash')
         ))
-    
-    # 初始动画点
+        fig.add_trace(go.Scatter3d(
+            x=[prev_res['landing'][0]], y=[prev_res['landing'][1]], z=[prev_res['landing'][2]],
+            mode='markers', name='上次落点', marker=dict(color='grey', size=5, symbol='x')
+        ))
+
+    # 2. 地面
+    grid_size = max(abs(landing[0]), abs(landing[1]), 20) * 1.5
+    x = np.linspace(-grid_size, grid_size, 20)
+    X, Y = np.meshgrid(x, x)
+    fig.add_trace(go.Surface(x=X, y=Y, z=X*0, colorscale='Greys', showscale=False, opacity=0.2, name='地面'))
+
+    # 3. 当前轨迹
     fig.add_trace(go.Scatter3d(
-        x=[res.trajectory[0, 0]], y=[res.trajectory[0, 1]], z=[res.trajectory[0, 2]],
-        mode='markers', name='小球', marker=dict(color='orange', size=15), showlegend=False
+        x=traj[:, 0], y=traj[:, 1], z=traj[:, 2],
+        mode='lines', name='当前轨迹', line=dict(color='#667eea', width=5)
     ))
-    
-    fig.frames = frames
-    frame_duration = dt * 1000 / speed
 
-    # 动画按钮配置
-    anim_buttons = [dict(
-        label='▶ 播放', method='animate',
-        args=[None, {'frame': {'duration': int(frame_duration), 'redraw': True}, 'fromcurrent': True}]
-    ), dict(
-        label='⏸ 暂停', method='animate',
-        args=[[None], {'frame': {'duration': 0, 'redraw': True}, 'mode': 'immediate'}]
-    )]
+    # 起点终点
+    fig.add_trace(go.Scatter3d(x=[traj[0,0]], y=[traj[0,1]], z=[traj[0,2]], mode='markers', name='起点', marker=dict(color='green', size=6)))
+    fig.add_trace(go.Scatter3d(x=[landing[0]], y=[landing[1]], z=[landing[2]], mode='markers', name='落地点', marker=dict(color='red', size=8)))
 
-    fig.update_layout(
-        title="小球运动轨迹 (3D视图)", height=700,
-        scene=dict(xaxis_title='X (m)', yaxis_title='Y (m)', zaxis_title='Z (m)', aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.5)),
-        updatemenus=[dict(type='buttons', showactive=False, y=0, x=0.1, xanchor='right', direction='left', buttons=anim_buttons)]
-    )
+    # 动画
+    if show_anim:
+        step = max(1, len(traj) // 80)
+        frames = [go.Frame(data=[go.Scatter3d(x=[traj[i,0]], y=[traj[i,1]], z=[traj[i,2]], mode='markers', marker=dict(color='orange', size=10))], name=f'f{i}') for i in range(0, len(traj), step)]
+        fig.frames = frames
+        # 修复：使用上面提取的 dt
+        fig.update_layout(updatemenus=[{'type': 'buttons', 'buttons': [{'label': '▶', 'method': 'animate', 'args': [None, {'frame': {'duration': dt*1000/anim_speed}}]}]}])
+
+        # 初始球
+        fig.add_trace(go.Scatter3d(x=[traj[0,0]], y=[traj[0,1]], z=[traj[0,2]], mode='markers', name='小球', marker=dict(color='orange', size=10), showlegend=False))
+
+    fig.update_layout(scene=dict(aspectmode='data'), margin=dict(l=0, r=0, b=0, t=0), height=500)
     return fig
 
-def plot_2d_projection(res: SimulationResult):
-    """绘制三个平面的2D投影"""
-    col1, col2, col3 = st.columns(3)
-    planes = [
-        ("XZ 平面 (侧视图)", 0, 2, 'X (m)', 'Z (m)', col1),
-        ("XY 平面 (俯视图)", 0, 1, 'X (m)', 'Y (m)', col2),
-        ("YZ 平面 (正视图)", 1, 2, 'Y (m)', 'Z (m)', col3)
-    ]
-    
-    for title, idx_x, idx_y, x_lab, y_lab, col in planes:
-        fig = go.Figure()
-        # 轨迹
-        fig.add_trace(go.Scatter(x=res.trajectory[:, idx_x], y=res.trajectory[:, idx_y], mode='lines', line=dict(color='blue', width=3), name='轨迹'))
-        # 起点
-        fig.add_trace(go.Scatter(x=[res.trajectory[0, idx_x]], y=[res.trajectory[0, idx_y]], mode='markers', marker=dict(color='green', size=10), name='起点'))
-        # 落地点
-        fig.add_trace(go.Scatter(x=[res.landing_point[idx_x]], y=[res.landing_point[idx_y]], mode='markers', marker=dict(color='red', size=10), name='落地点'))
-        
-        fig.update_layout(title=title, xaxis_title=x_lab, yaxis_title=y_lab, height=400, margin=dict(l=20, r=20, t=40, b=20))
-        col.plotly_chart(fig, width='stretch')
+def create_kinematics_charts(res: Dict):
+    """生成运动学图表：速度与能量"""
+    t = res['time']
+    v_mag = np.linalg.norm(res['vel'], axis=1)
+    ke, pe, te = res['energy'][:, 0], res['energy'][:, 1], res['energy'][:, 2]
 
-# ==================== 6. 主程序 (Main App) ====================
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("速度随时间变化", "机械能分析"))
+
+    # 速度图
+    fig.add_trace(go.Scatter(x=t, y=v_mag, name='合速度 (m/s)', line=dict(color='#4facfe')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=res['vel'][:, 2], name='垂直速度 (m/s)', line=dict(dash='dot', color='#f5576c')), row=1, col=1)
+
+    # 能量图
+    fig.add_trace(go.Scatter(x=t, y=ke, name='动能 (J)', line=dict(color='#ff9a9e')), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pe, name='势能 (J)', line=dict(color='#a18cd1')), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=te, name='机械能 (J)', line=dict(color='white', width=2)), row=1, col=2)
+
+    fig.update_layout(height=350, margin=dict(t=30, b=0), hovermode="x unified", template="plotly_dark")
+    return fig
+
+# ==================== 4. 蒙特卡洛与数据导出 ====================
+
+def run_monte_carlo(base_params: Dict, n_runs: int, noise_std: float):
+    """蒙特卡洛模拟：风力扰动"""
+    landings = []
+
+    progress_bar = st.progress(0)
+    for i in range(n_runs):
+        # 复制参数并添加随机扰动
+        p = base_params.copy()
+        p['wind_x'] += np.random.normal(0, noise_std)
+        p['wind_y'] += np.random.normal(0, noise_std)
+
+        # 快速运行（不返回完整轨迹，省内存）
+        res = run_simulation(p)
+        landings.append(res['landing'])
+        progress_bar.progress((i + 1) / n_runs)
+
+    progress_bar.empty()
+    return np.array(landings)
+
+def convert_df(res: Dict):
+    """将结果转换为 CSV"""
+    df = pd.DataFrame({
+        'Time (s)': res['time'],
+        'Pos_X (m)': res['traj'][:, 0],
+        'Pos_Y (m)': res['traj'][:, 1],
+        'Pos_Z (m)': res['traj'][:, 2],
+        'Vel_X (m/s)': res['vel'][:, 0],
+        'Vel_Y (m/s)': res['vel'][:, 1],
+        'Vel_Z (m/s)': res['vel'][:, 2],
+        'Kinetic_E (J)': res['energy'][:, 0],
+        'Potential_E (J)': res['energy'][:, 1]
+    })
+    return df.to_csv(index=False).encode('utf-8')
+
+# ==================== 5. 主程序逻辑 ====================
 
 def main():
-    st.set_page_config(page_title="3D物理仿真 - 无人机投掷小球", page_icon="🚁", layout="wide")
+    setup_page()
     load_css()
-    render_header()
 
-    # --- Sidebar: 参数设置 ---
-    st.sidebar.header("⚙️ 参数设置")
-    
-    # 1. 模式选择
+    # 顶部导航
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown('<div class="compact-header"><h1>🚁 3D物理仿真 Pro</h1></div>', unsafe_allow_html=True)
+
+    # 侧边栏
+    st.sidebar.header("⚙️ 参数控制")
+
+    # --- 参数输入区域 (保持原有的双向绑定逻辑) ---
     mode = st.sidebar.selectbox("运动模式", ["自由落体", "平抛运动", "斜抛运动"])
-    st.sidebar.divider()
 
-    # 2. 高度设置 (逻辑保留)
-    st.sidebar.subheader("📏 基础参数")
-    height_mode = st.sidebar.radio("高度模式", ["无人机高度", "小球高度"], horizontal=True)
-    
-    if height_mode == "无人机高度":
-        drone_h = render_synced_input("无人机高度 (m)", "drone_height", 0.0, 100.0, 0.1, 5.0)
-        ball_h = drone_h - 0.1
+    st.sidebar.subheader("📏 物体属性")
+    # 高度双向绑定
+    if 'drone_height' not in st.session_state: st.session_state.drone_height = 50.0
+    def sync_h(k_src, k_tgt): st.session_state[k_tgt] = st.session_state[k_src]
+
+    c1, c2 = st.sidebar.columns([3, 1])
+    c1.slider("高度 (m)", 0.0, 200.0, key="h_s", value=float(st.session_state.drone_height), on_change=sync_h, args=("h_s", "drone_height"))
+    c2.number_input("H", 0.0, 200.0, key="h_i", value=float(st.session_state.drone_height), on_change=sync_h, args=("h_i", "drone_height"), label_visibility="collapsed")
+
+    # 半径双向绑定
+    if 'radius_cm' not in st.session_state: st.session_state.radius_cm = 10.0
+    c3, c4 = st.sidebar.columns([3, 1])
+    c3.slider("半径 (cm)", 1.0, 100.0, key="r_s", value=float(st.session_state.radius_cm), on_change=sync_h, args=("r_s", "radius_cm"))
+    c4.number_input("R", 1.0, 100.0, key="r_i", value=float(st.session_state.radius_cm), on_change=sync_h, args=("r_i", "radius_cm"), label_visibility="collapsed")
+
+    density = st.sidebar.number_input("密度 (kg/m³)", value=1000.0)
+
+    st.sidebar.subheader("🚀 初始状态")
+    v0_x = st.sidebar.slider("水平速度 X", 0.0, 50.0, 20.0) if mode != "自由落体" else 0.0
+    v0_y = st.sidebar.slider("侧向速度 Y", 0.0, 50.0, 0.0) if mode == "斜抛运动" else 0.0
+    v0_z = st.sidebar.slider("垂直速度 Z", 0.0, 50.0, 10.0) if mode == "斜抛运动" else 0.0
+
+    st.sidebar.subheader("💨 环境")
+    wx = st.sidebar.slider("风速 X", -20.0, 20.0, 5.0)
+    wy = st.sidebar.slider("风速 Y", -20.0, 20.0, 0.0)
+    wz = st.sidebar.slider("风速 Z", -10.0, 10.0, 0.0)
+    dt = st.sidebar.slider("步长 (s)", 0.001, 0.1, 0.01)
+
+    # 运行按钮
+    if st.sidebar.button("🚀 开始仿真", type="primary"):
+        st.session_state.run_sim = True
+
+    # --- 参数字典 ---
+    params = {
+        'height': st.session_state.drone_height,
+        'radius': st.session_state.radius_cm / 100.0,
+        'density': density,
+        'v0_x': v0_x, 'v0_y': v0_y, 'v0_z': v0_z,
+        'wind_x': wx, 'wind_y': wy, 'wind_z': wz,
+        'dt': dt
+    }
+
+    # ==================== 主界面渲染 ====================
+
+    if 'run_sim' in st.session_state and st.session_state.run_sim:
+
+        # 1. 运行当前仿真
+        current_res = run_simulation(params)
+
+        # 2. 处理历史对比逻辑
+        if 'prev_res' not in st.session_state:
+            st.session_state.prev_res = None
+
+        # 3. 结果指标栏
+        st.markdown("### 📊 实时数据")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("飞行时间", f"{current_res['flight_time']:.2f} s")
+        m2.metric("落点 X", f"{current_res['landing'][0]:.2f} m")
+        m3.metric("落点 Y", f"{current_res['landing'][1]:.2f} m")
+
+        # 计算动能 (0.5mv^2)
+        final_v = np.linalg.norm(current_res['vel'][-1])
+        final_ke = 0.5 * current_res['mass'] * final_v**2
+        m4.metric("落地动能", f"{final_ke:.1f} J")
+        m5.metric("质量", f"{current_res['mass']:.2f} kg")
+
+        # 4. 3D 可视化 (含对比)
+        col_viz, col_ctrl = st.columns([3, 1])
+        with col_ctrl:
+            st.markdown("#### 🎮 视图控制")
+            show_anim = st.toggle("播放动画", value=True)
+            anim_speed = st.slider("动画倍速", 0.5, 5.0, 1.0)
+
+            st.divider()
+            st.info("💡 **提示**: 灰色虚线为上一次运行的轨迹，可用于调整参数后的对比。")
+
+            # --- 功能：CSV 导出 ---
+            csv = convert_df(current_res)
+            st.download_button(
+                label="📥 导出数据 (CSV)",
+                data=csv,
+                file_name='sim_data.csv',
+                mime='text/csv',
+                use_container_width=True
+            )
+
+        with col_viz:
+            st.plotly_chart(create_3d_plot(current_res, st.session_state.prev_res, anim_speed, show_anim), use_container_width=True)
+
+        # 5. --- 功能：运动学图表 ---
+        st.markdown("### 📈 运动学分析")
+        chart_fig = create_kinematics_charts(current_res)
+        st.plotly_chart(chart_fig, use_container_width=True)
+
+        # 6. --- 功能：蒙特卡洛模拟 ---
+        st.markdown("---")
+        with st.expander("🎲 蒙特卡洛模拟 (Monte Carlo Simulation) - 落点概率分析", expanded=False):
+            mc_col1, mc_col2 = st.columns([1, 2])
+
+            with mc_col1:
+                st.markdown("**参数设置**")
+                n_mc = st.number_input("模拟次数", 10, 500, 100)
+                noise = st.slider("风速扰动标准差 (m/s)", 0.1, 5.0, 1.0, help="风速的不确定性大小")
+                run_mc = st.button("开始概率模拟")
+
+            with mc_col2:
+                if run_mc:
+                    with st.spinner(f"正在进行 {n_mc} 次并行仿真..."):
+                        mc_landings = run_monte_carlo(params, n_mc, noise)
+
+                        # 绘制散点图
+                        mc_fig = go.Figure()
+                        # 散点
+                        mc_fig.add_trace(go.Scatter(
+                            x=mc_landings[:, 0], y=mc_landings[:, 1],
+                            mode='markers', marker=dict(color='rgba(102, 126, 234, 0.6)', size=8),
+                            name='模拟落点'
+                        ))
+                        # 平均落点
+                        mean_x, mean_y = np.mean(mc_landings[:, 0]), np.mean(mc_landings[:, 1])
+                        mc_fig.add_trace(go.Scatter(
+                            x=[mean_x], y=[mean_y],
+                            mode='markers', marker=dict(color='red', size=15, symbol='cross'),
+                            name='平均落点'
+                        ))
+                        # 靶心 (当前单次运行的落点)
+                        mc_fig.add_trace(go.Scatter(
+                            x=[current_res['landing'][0]], y=[current_res['landing'][1]],
+                            mode='markers', marker=dict(color='gold', size=12, symbol='star'),
+                            name='当前主落点'
+                        ))
+
+                        mc_fig.update_layout(
+                            title="落点散布图 (俯视 XY平面)",
+                            xaxis_title="X (m)", yaxis_title="Y (m)",
+                            template="plotly_dark", height=400,
+                            margin=dict(l=20, r=20, t=40, b=20)
+                        )
+                        st.plotly_chart(mc_fig, use_container_width=True)
+                        st.success(f"模拟完成！落点标准差: X={np.std(mc_landings[:,0]):.2f}m, Y={np.std(mc_landings[:,1]):.2f}m")
+
+        # 仿真结束后，将当前结果存为“上次结果”，供下一次对比使用
+        st.session_state.prev_res = current_res
+
     else:
-        ball_h = render_synced_input("小球高度 (m)", "ball_height", 0.0, 100.0, 0.1, 5.0)
-        drone_h = ball_h + 0.1
-
-    # 半径与密度
-    ball_r_cm = render_synced_input("小球半径 (cm)", "ball_radius_cm", 1.0, 1000.0, 1.0, CONST_DEFAULT_RADIUS_CM)
-    
-    if 'ball_density' not in st.session_state:
-        st.session_state.ball_density = CONST_DEFAULT_DENSITY
-        
-    st.sidebar.number_input("小球密度 (kg/m³)", 1.0, 20000.0, key="ball_density")
-    
-    with st.sidebar.expander("🎯 快速选择密度"):
-        presets = {"空气": 1.29, "水": 1000.0, "铁": 7860.0, "金": 19320.0, "塑料": 935.0, "木材": 500.0}
-        sel_preset = st.selectbox("选择预设", list(presets.keys()), index=1)
-        if st.button("应用预设"):
-            st.session_state.ball_density = presets[sel_preset]
-            st.rerun()
-
-    # 3. 速度设置 (逻辑合并优化)
-    st.sidebar.divider()
-    st.sidebar.subheader("🚀 初速度设置")
-    
-    # 默认值
-    v0_defaults = {'x': 20.0, 'y': 0.0, 'z': 10.0}
-    
-    # 根据模式显示不同的滑块，未显示的设为0
-    vx, vy, vz = 0.0, 0.0, 0.0
-    
-    if mode in ["平抛运动", "斜抛运动"]:
-        vx = st.sidebar.slider("水平初速度 v₀x", 0.0, 50.0, st.session_state.get('v0_x', v0_defaults['x']), key='v0_x')
-    
-    if mode == "斜抛运动":
-        vy = st.sidebar.slider("侧向初速度 v₀y", 0.0, 50.0, st.session_state.get('v0_y', v0_defaults['y']), key='v0_y')
-        vz = st.sidebar.slider("垂直初速度 v₀z", 0.0, 50.0, st.session_state.get('v0_z', v0_defaults['z']), key='v0_z')
-    
-    # 4. 风力设置
-    st.sidebar.divider()
-    st.sidebar.subheader("💨 风力设置")
-    wx = st.sidebar.slider("X风速 (m/s)", -20.0, 20.0, 0.0, key="wind_x", help="正值向右")
-    wy = st.sidebar.slider("Y风速 (m/s)", -20.0, 20.0, 0.0, key="wind_y", help="正值向前")
-    wz = st.sidebar.slider("Z风速 (m/s)", -10.0, 10.0, 0.0, key="wind_z", help="正值向上")
-    
-    wind_total = np.sqrt(wx**2 + wy**2 + wz**2)
-    st.sidebar.caption(f"💡 总风速: {wind_total:.1f} m/s")
-
-    # 5. 仿真控制
-    st.sidebar.divider()
-    dt = st.sidebar.slider("时间步长 (s)", 0.001, 0.1, 0.01, 0.001)
-    
-    if st.sidebar.button("🔄 重置所有参数"):
-        for key in st.session_state.keys():
-            del st.session_state[key]
-        st.rerun()
-
-    # --- Main: 运行仿真 ---
-    if st.sidebar.button("🚀 开始仿真", type="primary", use_container_width=True):
-        
-        # 封装参数
-        params = SimulationParams(
-            ball_height=ball_h,
-            ball_radius=ball_r_cm / 100.0,
-            ball_density=st.session_state.ball_density,
-            mode=mode,
-            v0=np.array([vx, vy, vz]),
-            wind_velocity=np.array([wx, wy, wz]),
-            dt=dt
-        )
-        
-        with st.spinner("正在计算轨迹..."):
-            result = PhysicsEngine.run_simulation(params)
-        
-        st.success("✅ 仿真完成！")
-
-        # 参数回顾
-        st.markdown('<div class="feature-card"><h3>⚙️ 仿真参数摘要</h3></div>', unsafe_allow_html=True)
-        with st.expander("查看详细参数"):
-            c1, c2 = st.columns(2)
-            c1.write(f"**基本**: 模式={mode}, 高度={ball_h}m, 半径={ball_r_cm}cm, 密度={params.ball_density}kg/m³")
-            c2.write(f"**速度**: V0=({vx}, {vy}, {vz})m/s, 风速=({wx}, {wy}, {wz})m/s")
-
-        # 结果指标
-        fmt = ".4f"
-        cols = st.columns(5)
-        metrics = [
-            ("初始高度", ball_h, "m"), ("飞行时间", result.flight_time, "s"),
-            ("落地点 X", result.landing_point[0], "m"), ("落地点 Y", result.landing_point[1], "m"), 
-            ("落地点 Z", result.landing_point[2], "m")
-        ]
-        for c, (lbl, val, unit) in zip(cols, metrics):
-            c.metric(lbl, f"{val:{fmt}} {unit}")
-
-        # 物理属性与风力
-        st.subheader("📊 详细物理数据")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("质量", f"{result.mass:.4f} kg")
-        c2.metric("体积", f"{result.volume:.6f} m³")
-        c3.metric("迎风面积", f"{np.pi * params.ball_radius**2:.6f} m²")
-        
-        # 风力加速度估算 (最大值)
-        max_drag = 0.5 * CONST_AIR_DENSITY * CONST_DRAG_COEFF * (np.pi * params.ball_radius**2) * wind_total**2
-        wind_acc = max_drag / result.mass
-        c4.metric("最大风力加速度", f"{wind_acc:.4f} m/s²")
-        
-        # 智能提示 (Info Boxes)
-        wind_msg = f"**风力分析**: 风速 {wind_total:.2f} m/s. "
-        if wind_total == 0: wind_msg += "无风环境。"
-        elif wind_acc > 0.5: wind_msg += "🌪️ 风力影响显著，落地点偏移较大。"
-        else: wind_msg += "✅ 风力影响适中。"
-        st.info(wind_msg)
-        
-        work_msg = f"**能量分析**: 重力做功 {result.gravity_work:.2f}J (势能转化), 风力做功 {result.wind_work:.2f}J."
-        if result.wind_work > 0: work_msg += " (风力助推)"
-        elif result.wind_work < 0: work_msg += " (风力阻碍)"
-        st.info(work_msg)
-
-        # 3D 可视化
-        st.subheader("🎯 3D 轨迹可视化")
-        c_anim1, c_anim2 = st.columns([1, 3])
-        show_anim = c_anim1.checkbox("🎬 显示动画", value=True)
-        speed = c_anim2.slider("播放倍速", 0.1, 10.0, 1.0, disabled=not show_anim)
-        
-        if show_anim:
-            st.plotly_chart(create_3d_figure(result, dt, speed), use_container_width=True)
-        
-        # 2D 投影
-        st.subheader("📐 2D 投影图")
-        plot_2d_projection(result)
-
-        # 底部参考资料
-        with st.expander("📚 密度参考与物理公式"):
-            st.dataframe(pd.DataFrame([
-                ["水", 1000, "液体"], ["铁", 7860, "金属"], ["空气", 1.29, "气体"]
-            ], columns=["物体", "密度(kg/m³)", "类别"]), hide_index=True, use_container_width=True)
-            st.markdown(r"""
-            $$ \vec{F}_{total} = m\vec{g} + \frac{1}{2}\rho C_d A |\vec{v}_{rel}|\vec{v}_{rel} $$
-            """)
+        st.info("👈 请点击左侧 **开始仿真** 按钮运行程序")
 
 if __name__ == "__main__":
     main()

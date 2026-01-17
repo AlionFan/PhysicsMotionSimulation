@@ -195,6 +195,8 @@ def run_simulation(params: Dict[str, Any]):
 
     trajectory = [pos.copy()]
     time_points = [0.0]
+    velocities = [vel.copy()]  # 记录速度变化
+
     t = 0.0
 
     gravity_work = 0.0
@@ -216,9 +218,11 @@ def run_simulation(params: Dict[str, Any]):
 
         trajectory.append(pos.copy())
         time_points.append(t)
+        velocities.append(vel.copy())
 
     trajectory = np.array(trajectory)
     time_points = np.array(time_points)
+    velocities = np.array(velocities)
 
     if trajectory[-1, 2] < 0 and len(trajectory) > 1:
         prev_p = trajectory[-2]
@@ -232,9 +236,25 @@ def run_simulation(params: Dict[str, Any]):
         landing_point[2] = max(0.0, landing_point[2])
         flight_time = time_points[-1]
 
+    # 计算速度大小
+    velocity_magnitudes = np.linalg.norm(velocities, axis=1)
+
+    # 计算机械能
+    # 势能 PE = m * g * h
+    potential_energy = mass * CONSTANTS['G'] * trajectory[:, 2]
+    # 动能 KE = 0.5 * m * v^2
+    kinetic_energy = 0.5 * mass * velocity_magnitudes**2
+    # 总机械能 ME = PE + KE
+    mechanical_energy = potential_energy + kinetic_energy
+
     return {
         'traj': trajectory,
         'time': time_points,
+        'velocities': velocities,
+        'velocity_magnitudes': velocity_magnitudes,
+        'potential_energy': potential_energy,
+        'kinetic_energy': kinetic_energy,
+        'mechanical_energy': mechanical_energy,
         'landing': landing_point,
         'flight_time': flight_time,
         'mass': mass,
@@ -326,6 +346,88 @@ def create_2d_projections(traj, landing):
         )
         plots.append(fig)
     return plots
+
+def create_kinematics_charts(res: Dict):
+    """创建运动学图表：速度分析和机械能分析"""
+    time = res['time']
+    velocity_magnitudes = res['velocity_magnitudes']
+    potential_energy = res['potential_energy']
+    kinetic_energy = res['kinetic_energy']
+    mechanical_energy = res['mechanical_energy']
+
+    # 左图：速度分析
+    fig_velocity = go.Figure()
+    fig_velocity.add_trace(go.Scatter(
+        x=time,
+        y=velocity_magnitudes,
+        mode='lines',
+        name='总速度',
+        line=dict(color='#667eea', width=3)
+    ))
+
+    # 检查是否达到终端速度（速度变化率趋近于0）
+    if len(velocity_magnitudes) > 10:
+        # 计算最后10%时间段的平均速度变化率
+        last_10_percent = int(len(velocity_magnitudes) * 0.1)
+        if last_10_percent > 0:
+            velocity_change_rate = np.abs(np.diff(velocity_magnitudes[-last_10_percent:])).mean()
+            terminal_velocity_threshold = 0.01  # 速度变化率小于此值认为达到终端速度
+
+            if velocity_change_rate < terminal_velocity_threshold and velocity_magnitudes[-1] > 0:
+                terminal_velocity = velocity_magnitudes[-1]
+                # 在图上标注终端速度
+                fig_velocity.add_hline(
+                    y=terminal_velocity,
+                    line_dash="dash",
+                    line_color="red",
+                    annotation_text=f"终端速度: {terminal_velocity:.2f} m/s",
+                    annotation_position="top right"
+                )
+
+    fig_velocity.update_layout(
+        title="速度分析",
+        xaxis_title="时间 (s)",
+        yaxis_title="速度 (m/s)",
+        margin=dict(l=20, r=20, b=20, t=40),
+        height=400,
+        hovermode='x unified'
+    )
+
+    # 右图：机械能分析
+    fig_energy = go.Figure()
+    fig_energy.add_trace(go.Scatter(
+        x=time,
+        y=potential_energy,
+        mode='lines',
+        name='势能 (PE)',
+        line=dict(color='#9b59b6', width=2)
+    ))
+    fig_energy.add_trace(go.Scatter(
+        x=time,
+        y=kinetic_energy,
+        mode='lines',
+        name='动能 (KE)',
+        line=dict(color='#e91e63', width=2)
+    ))
+    fig_energy.add_trace(go.Scatter(
+        x=time,
+        y=mechanical_energy,
+        mode='lines',
+        name='总机械能 (ME)',
+        line=dict(color='white', width=3)
+    ))
+
+    fig_energy.update_layout(
+        title="机械能分析",
+        xaxis_title="时间 (s)",
+        yaxis_title="能量 (J)",
+        margin=dict(l=20, r=20, b=20, t=40),
+        height=400,
+        hovermode='x unified',
+        template='plotly_dark'
+    )
+
+    return fig_velocity, fig_energy
 
 # ==================== 4. 侧边栏逻辑 (已修复同步问题) ====================
 
@@ -565,7 +667,14 @@ def render_results(res: Dict, params: Dict):
     col_p2.plotly_chart(proj_figs[1], width="stretch")
     col_p3.plotly_chart(proj_figs[2], width="stretch")
 
-    # 5. 底部公式展示
+    # 5. 运动学图表
+    st.subheader("📈 运动学分析")
+    fig_velocity, fig_energy = create_kinematics_charts(res)
+    col_k1, col_k2 = st.columns(2)
+    col_k1.plotly_chart(fig_velocity, width="stretch")
+    col_k2.plotly_chart(fig_energy, width="stretch")
+
+    # 6. 底部公式展示
     render_formulas(res)
 
 # ==================== 6. 主程序入口 ====================
