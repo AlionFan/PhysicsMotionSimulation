@@ -380,63 +380,63 @@ BALL_DENSITY = 1000  # 小球密度 (kg/m³)，假设为水的密度
 def calculate_ball_properties(radius, density):
     """
     计算小球的物理属性
-    
+
     参数:
         radius: 小球半径 (m)
         density: 小球密度 (kg/m³)
     """
     # 体积 V = 4/3 * π * r³
     volume = (4/3) * np.pi * radius**3
-    
+
     # 质量 m = ρ * V
     mass = density * volume
-    
+
     # 迎风面积 A = π * r²
     cross_sectional_area = np.pi * radius**2
-    
+
     return volume, mass, cross_sectional_area
 
 def calculate_forces(ball_velocity, wind_velocity, mass, cross_sectional_area):
     """
     计算作用在小球上的合力
-    
+
     参数:
         ball_velocity: 小球速度向量 [vx, vy, vz] (m/s)
         wind_velocity: 风速向量 [wx, wy, wz] (m/s)
         mass: 小球质量 (kg)
         cross_sectional_area: 迎风面积 (m²)
-    
+
     返回:
         total_force: 合力向量 [Fx, Fy, Fz] (N)
     """
     # 1. 重力 F_g = m * g (沿Z轴负方向)
     gravity_force = np.array([0, 0, -mass * G])
-    
+
     # 2. 风力/空气阻力
     # 相对速度 v_rel = v_wind - v_ball
     relative_velocity = wind_velocity - ball_velocity
-    
+
     # 相对速度的大小
     relative_speed = np.linalg.norm(relative_velocity)
-    
+
     if relative_speed > 0:
         # 空气阻力方程: F_wind = 0.5 * ρ * Cd * A * |v_rel| * v_rel
         drag_force = 0.5 * AIR_DENSITY * DRAG_COEFFICIENT * cross_sectional_area * relative_speed * relative_velocity
     else:
         drag_force = np.array([0, 0, 0])
-    
+
     # 3. 合力
     total_force = gravity_force + drag_force
-    
+
     return total_force
 
 def simulate_trajectory(params):
     """
     模拟小球运动轨迹
-    
+
     参数:
         params: 包含所有仿真参数的字典
-    
+
     返回:
         trajectory: 轨迹点数组 (N x 3)
         time: 时间数组
@@ -455,13 +455,13 @@ def simulate_trajectory(params):
     wind_speed_y = params['wind_speed_y']
     wind_speed_z = params['wind_speed_z']
     dt = params['dt']
-    
+
     # 计算小球属性
     volume, mass, cross_sectional_area = calculate_ball_properties(ball_radius, ball_density)
-    
+
     # 初始位置（小球高度）
     initial_position = np.array([0.0, 0.0, ball_height], dtype=float)
-    
+
     # 初始速度
     if mode == '自由落体':
         initial_velocity = np.array([0.0, 0.0, 0.0], dtype=float)
@@ -469,18 +469,18 @@ def simulate_trajectory(params):
         initial_velocity = np.array([float(v0_x), 0.0, 0.0], dtype=float)
     elif mode == '斜抛运动':
         initial_velocity = np.array([float(v0_x), float(v0_y), float(v0_z)], dtype=float)
-    
+
     # 风速向量
     wind_velocity = np.array([float(wind_speed_x), float(wind_speed_y), float(wind_speed_z)], dtype=float)
-    
+
     # 数值积分（使用半隐式欧拉法）
     position = initial_position.copy()
     velocity = initial_velocity.copy()
-    
+
     trajectory = [position.copy()]
     time_points = [0]
     t = 0
-    
+
     # 模拟循环
     gravity_work = 0.0  # 重力做功
     wind_work = 0.0  # 风力做功
@@ -535,28 +535,28 @@ def simulate_trajectory(params):
     # 转换为numpy数组
     trajectory = np.array(trajectory)
     time_points = np.array(time_points)
-    
+
     # 修正落地点坐标
     # 如果最后一个点的Z坐标小于0（穿过了地面），进行线性插值修正
     if trajectory[-1, 2] < 0:
         # 获取倒数第二个点（在地面以上）
         prev_point = trajectory[-2]
         last_point = trajectory[-1]
-        
+
         # 计算穿过地面的比例
         # prev_z > 0, last_z < 0
         # 我们要找到z=0的点
         z_prev = prev_point[2]
         z_last = last_point[2]
-        
+
         # 线性插值比例：从prev_point到last_point，z从正数变为负数
         # 我们要找到z=0的位置的比例
         ratio = z_prev / (z_prev - z_last)  # 0 < ratio < 1
-        
+
         # 插值计算落地点
         landing_point = prev_point + ratio * (last_point - prev_point)
         landing_point[2] = 0.0  # 确保Z坐标为0
-        
+
         # 插值计算飞行时间
         flight_time = time_points[-2] + ratio * (time_points[-1] - time_points[-2])
     else:
@@ -564,7 +564,7 @@ def simulate_trajectory(params):
         landing_point = trajectory[-1]
         landing_point[2] = max(0.0, landing_point[2])  # 确保Z坐标不为负
         flight_time = time_points[-1]
-    
+
     return trajectory, time_points, landing_point, flight_time, mass, volume, gravity_work, wind_work
 
 # ==================== Streamlit界面 ====================
@@ -1185,7 +1185,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
         'wind_speed_z': wind_speed_z,
         'dt': dt
     }
-    
+
     # 运行仿真
     with st.spinner("正在计算轨迹..."):
         trajectory, time_points, landing_point, flight_time, mass, volume, gravity_work, wind_work = simulate_trajectory(params)
@@ -1218,10 +1218,10 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
         st.write(f"- X方向: {wind_speed_x:.1f} m/s")
         st.write(f"- Y方向: {wind_speed_y:.1f} m/s")
         st.write(f"- Z方向: {wind_speed_z:.1f} m/s")
-    
+
     # 根据精确度格式化数据
     format_str = ".4f"
-    
+
     # 分栏显示结果
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("初始高度", f"{ball_height:{format_str}} m")
@@ -1229,7 +1229,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
     col3.metric("落地点 X", f"{landing_point[0]:{format_str}} m")
     col4.metric("落地点 Y", f"{landing_point[1]:{format_str}} m")
     col5.metric("落地点 Z", f"{landing_point[2]:{format_str}} m")
-    
+
     # 显示小球属性
     st.subheader("📊 小球物理属性")
     col5, col6, col7, col8 = st.columns(4)
@@ -1237,7 +1237,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
     col6.metric("小球体积", f"{volume:{format_str}} m³")
     col7.metric("小球密度", f"{ball_density:{format_str}} kg/m³")
     col8.metric("迎风面积", f"{np.pi * ball_radius**2:{format_str}} m²")
-    
+
     # 显示风力信息
     st.subheader("💨 风力影响")
     wind_speed = np.sqrt(wind_speed_x**2 + wind_speed_y**2 + wind_speed_z**2)
@@ -1246,14 +1246,14 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
     col_wind2.metric("X方向风速", f"{wind_speed_x:{format_str}} m/s")
     col_wind3.metric("Y方向风速", f"{wind_speed_y:{format_str}} m/s")
     col_wind4.metric("Z方向风速", f"{wind_speed_z:{format_str}} m/s")
-    
+
     # 计算最大风力产生的加速度（假设小球静止）
     max_drag_force = 0.5 * AIR_DENSITY * DRAG_COEFFICIENT * (np.pi * ball_radius**2) * wind_speed**2
     max_acceleration = max_drag_force / mass if mass > 0 else 0
     col_wind5, col_wind6 = st.columns(2)
     col_wind5.metric("最大空气阻力", f"{max_drag_force:{format_str}} N")
     col_wind6.metric("风力加速度", f"{max_acceleration:{format_str}} m/s²")
-    
+
     # 风力影响说明
     wind_info = f"""
     **风力影响分析：**
@@ -1270,7 +1270,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             wind_info += "\n🌪️ **风力影响显著**：风力将大幅改变落地点位置。"
     else:
         wind_info += "\nℹ️ **无风**：小球将按自由落体或抛物线运动。"
-    
+
     st.info(wind_info)
 
     # 显示做功信息
@@ -1306,18 +1306,18 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
 
     # 3D轨迹可视化
     st.subheader("🎯 3D轨迹可视化")
-    
+
     # 初始化session_state
     if 'animation_speed' not in st.session_state:
         st.session_state.animation_speed = 1.0  # 默认1倍速（真实时间）
     if 'show_animation' not in st.session_state:
         st.session_state.show_animation = True
-    
+
     # 计算动画帧持续时间（毫秒）
     # 真实时间播放：每帧的时间间隔应该等于dt（时间步长）
     # duration = dt * 1000 / speed（毫秒）
     frame_duration = dt * 1000 / st.session_state.animation_speed
-    
+
     # 动画控制面板
     col_anim1, col_anim2, col_anim3 = st.columns([2, 2, 2])
     with col_anim1:
@@ -1325,9 +1325,9 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
     with col_anim2:
         if st.session_state.show_animation:
             st.slider(
-                "播放速度倍率", 
-                0.1, 10.0, 
-                st.session_state.animation_speed, 0.1, 
+                "播放速度倍率",
+                0.1, 10.0,
+                st.session_state.animation_speed, 0.1,
                 help=f"1.0x = 真实时间（每帧{dt*1000:{format_str}}ms），当前每帧{frame_duration:{format_str}}ms",
                 key="anim_speed_slider",
                 disabled=True
@@ -1335,7 +1335,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
     with col_anim3:
         if st.session_state.show_animation:
             auto_play = st.checkbox("自动播放", value=True, help="勾选后自动播放动画", key="auto_play_checkbox")
-    
+
     # 显示时间信息
     if st.session_state.show_animation:
         col_time1, col_time2 = st.columns(2)
@@ -1343,19 +1343,19 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             st.info(f"📊 真实飞行时间: {flight_time:{format_str}} 秒")
         with col_time2:
             st.info(f"🎬 动画播放时间: {flight_time / st.session_state.animation_speed:{format_str}} 秒")
-    
+
     fig = make_subplots(
         rows=1, cols=1,
         specs=[[{'type': 'scatter3d'}]]
     )
-    
+
     # 添加地面网格
     grid_range = max(abs(landing_point[0]), abs(landing_point[1]), 50)
     x_grid = np.linspace(-grid_range, grid_range, 20)
     y_grid = np.linspace(-grid_range, grid_range, 20)
     X_grid, Y_grid = np.meshgrid(x_grid, y_grid)
     Z_grid = np.zeros_like(X_grid)
-    
+
     fig.add_trace(
         go.Surface(
             x=X_grid,
@@ -1367,7 +1367,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             name='地面'
         )
     )
-    
+
     # 添加轨迹线
     fig.add_trace(
         go.Scatter3d(
@@ -1379,7 +1379,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             line=dict(color='blue', width=4)
         )
     )
-    
+
     # 添加起点
     fig.add_trace(
         go.Scatter3d(
@@ -1391,7 +1391,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             marker=dict(color='green', size=10)
         )
     )
-    
+
     # 添加落地点
     fig.add_trace(
         go.Scatter3d(
@@ -1403,13 +1403,13 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             marker=dict(color='red', size=10)
         )
     )
-    
+
     # 添加动画小球
     frames = []
     # 采样率：根据轨迹长度和播放速度动态调整
     # 目标：保持动画流畅，同时帧数不过多
     base_sampling_rate = max(1, int(len(trajectory) * 0.01))  # 基础采样率1%
-    
+
     # 高速播放时增加采样间隔，减少帧数
     if st.session_state.animation_speed > 2.0:
         sampling_rate = max(1, int(len(trajectory) * 0.005))  # 0.5%采样
@@ -1417,7 +1417,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
         sampling_rate = max(1, int(len(trajectory) * 0.002))  # 0.2%采样
     else:
         sampling_rate = base_sampling_rate
-    
+
     for i in range(0, len(trajectory), sampling_rate):
         frame = go.Frame(
             data=[
@@ -1434,7 +1434,7 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             name=f'frame_{i}'
         )
         frames.append(frame)
-    
+
     # 添加初始小球位置
     fig.add_trace(
         go.Scatter3d(
@@ -1447,9 +1447,9 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             showlegend=False
         )
     )
-    
+
     fig.frames = frames
-    
+
     # 设置布局
     fig.update_layout(
         title="小球运动轨迹 (3D视图)",
@@ -1522,9 +1522,9 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
             'yanchor': 'top'
         }]
     )
-    
+
     st.plotly_chart(fig, width='stretch')
-    
+
     # 2D投影图
     st.subheader("📐 2D投影图")
 
@@ -1671,12 +1671,12 @@ if st.sidebar.button("🚀 开始仿真", type="primary", width='stretch'):
     - 体积：$V = \\frac{4}{3}\\pi r^3$
     - 质量：$m = \\rho_{ball} \\times V$
     - 迎风面积：$A = \\pi r^2$
-    
+
     **2. 受力分析：**
     - 重力：$\\vec{F}_g = m \\times \\vec{g} = (0, 0, -mg)$
     - 空气阻力：$\\vec{F}_{drag} = \\frac{1}{2} \\rho C_d A |\\vec{v}_{rel}| \\vec{v}_{rel}$
     - 相对速度：$\\vec{v}_{rel} = \\vec{v}_{wind} - \\vec{v}_{ball}$
-    
+
     **3. 运动方程：**
     - 合力：$\\vec{F}_{total} = \\vec{F}_g + \\vec{F}_{drag}$
     - 加速度：$\\vec{a} = \\frac{\\vec{F}_{total}}{m}$
