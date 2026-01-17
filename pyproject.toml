@@ -1,0 +1,11 @@
+[project]
+name = "stem"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.4.1",
+    "plotly>=6.5.2",
+    "streamlit>=1.53.0",
+]
